@@ -2,6 +2,8 @@ const clc = require('cli-color');
 const fs = require('fs');
 const axios = require('axios');
 const path = require('path');
+const fetch = require('node-fetch');
+const cheerio = require('cheerio');
 
 function sleep(ms) {
     return new Promise(resolve => setTimeout(resolve, ms));
@@ -37,15 +39,69 @@ function getDomainFromUrl(url) {
     }
 }
 
-// Fungsi untuk mendapatkan thumbnail berdasarkan domain
+// Fungsi untuk mendapatkan thumbnail berdasarkan domain (FALLBACK)
 function getThumbnailByDomain(domain) {
     const thumbnails = {
         'whatsapp.com': 'https://blogger.googleusercontent.com/img/b/R29vZ2xl/AVvXsEhE9lXKKSIcCekjL9o2RyPQ0qDDkGPUxAAPycvsjKiU-o_mweUILeaQemNax7-C858TPDLMipLQmXAU7KjbcJdvCoXAhb9JzqQiLUIaorvVTiANBvVn3rH0RW-MZ7SAuyBJSswNLj3z0t6Q_r-S3ybQZwC5yq8millZripX-4j2Kft1GBop2Ut2EVrWWDM/s700/logo191kb.png',
         'youtube.com': 'https://i.ibb.co/Lk2Q8bG/youtube-thumb.jpg',
-        'instagram.com': 'https://i.ibb.co/0jQ8Z9L/instagram-thumb.jpg'
+        'instagram.com': 'https://i.ibb.co/0jQ8Z9L/instagram-thumb.jpg',
+        't.me': 'https://i.ibb.co/0jQ8Z9L/telegram-thumb.jpg',
+        'facebook.com': 'https://i.ibb.co/0jQ8Z9L/facebook-thumb.jpg'
     };
     
     return thumbnails[domain] || 'https://i.ibb.co/0jQ8Z9L/default-thumb.jpg';
+}
+
+// ✅ FUNGSI BARU: Ambil OG image dari link secara realtime
+async function getOgImageFromUrl(url) {
+    try {
+        const response = await fetch(url, { 
+            timeout: 5000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        });
+        
+        const html = await response.text();
+        const $ = cheerio.load(html);
+        
+        // Cari OG image, twitter image, atau favicon
+        const ogImage = $('meta[property="og:image"]').attr('content') ||
+                       $('meta[name="og:image"]').attr('content') ||
+                       $('meta[name="twitter:image"]').attr('content') ||
+                       $('link[rel="apple-touch-icon"]').attr('href') ||
+                       $('link[rel="icon"]').attr('href');
+        
+        return ogImage;
+    } catch (error) {
+        console.error('Error fetch OG image:', error);
+        return null;
+    }
+}
+
+// ✅ FUNGSI BARU: Ambil title dari webpage
+async function getPageTitleFromUrl(url) {
+    try {
+        const response = await fetch(url, { 
+            timeout: 3000,
+            headers: {
+                'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
+            }
+        });
+        
+        const html = await response.text();
+        const $ = cheerio.load(html);
+        
+        // Ambil title page
+        const title = $('title').text() || 
+                     $('meta[property="og:title"]').attr('content') ||
+                     $('meta[name="twitter:title"]').attr('content');
+        
+        return title || new URL(url).hostname.replace('www.', '').toUpperCase();
+    } catch (error) {
+        console.error('Error fetch page title:', error);
+        return new URL(url).hostname.replace('www.', '').toUpperCase();
+    }
 }
 
 // Fungsi untuk mendeteksi jenis file
@@ -283,9 +339,48 @@ async function jpm(sock, sender, messages, key, messageEvent) {
             if (filesToSend.length > 0) {
                 // KIRIM CAPTION TERLEBIH DAHULU
                 if (captionText) {
-                    await sock.sendMessage(group.id, { 
-                        text: `📢 ${captionText}` 
-                    });
+                    // ✅ CEK JIKA ADA LINK DI CAPTION (THUMBNAIL BESAR)
+                    const linksInCaption = extractLinks(captionText);
+                    if (linksInCaption.length > 0) {
+                        const firstLink = linksInCaption[0];
+                        
+                        // ✅ AUTO-FETCH THUMBNAIL ASLI DARI LINK
+                        let thumbnailUrl = getThumbnailByDomain(getDomainFromUrl(firstLink));
+                        let pageTitle = getDomainFromUrl(firstLink).toUpperCase();
+                        
+                        try {
+                            const [ogImage, title] = await Promise.all([
+                                getOgImageFromUrl(firstLink),
+                                getPageTitleFromUrl(firstLink)
+                            ]);
+                            
+                            if (ogImage) thumbnailUrl = ogImage;
+                            if (title) pageTitle = title;
+                            
+                        } catch (error) {
+                            console.log('Gagal fetch metadata, menggunakan fallback');
+                        }
+                        
+                        await sock.sendMessage(group.id, {
+                            text: captionText,
+                            contextInfo: {
+                                externalAdReply: {
+                                    title: `🔗 ${pageTitle}`,
+                                    body: 'Klik untuk membuka ↗️',
+                                    mediaType: 1,
+                                    thumbnailUrl: thumbnailUrl,
+                                    sourceUrl: firstLink,
+                                    mediaUrl: firstLink,
+                                    showAdAttribution: true,
+                                    renderLargerThumbnail: true
+                                }
+                            }
+                        });
+                    } else {
+                        await sock.sendMessage(group.id, { 
+                            text: `📢 ${captionText}` 
+                        });
+                    }
                     await sleep(1000);
                 }
 
@@ -326,20 +421,37 @@ async function jpm(sock, sender, messages, key, messageEvent) {
             } 
             else if (hasLinks) {
                 const firstLink = links[0];
-                const domain = getDomainFromUrl(firstLink);
-                const thumbnailUrl = getThumbnailByDomain(domain);
                 
+                // ✅ AUTO-FETCH THUMBNAIL ASLI DARI LINK
+                let thumbnailUrl = getThumbnailByDomain(getDomainFromUrl(firstLink));
+                let pageTitle = getDomainFromUrl(firstLink).toUpperCase();
+                
+                try {
+                    const [ogImage, title] = await Promise.all([
+                        getOgImageFromUrl(firstLink),
+                        getPageTitleFromUrl(firstLink)
+                    ]);
+                    
+                    if (ogImage) thumbnailUrl = ogImage;
+                    if (title) pageTitle = title;
+                    
+                } catch (error) {
+                    console.log('Gagal fetch metadata, menggunakan fallback');
+                }
+                
+                // ✅ THUMBNAIL BESAR UNTUK BROADCAST TEKS
                 await sock.sendMessage(group.id, {
                     text: captionText,
                     contextInfo: {
                         externalAdReply: {
-                            title: `🔗 ${domain.toUpperCase()} LINK`,
-                            body: 'Klik untuk membuka link ↗️',
+                            title: `🔗 ${pageTitle}`,
+                            body: 'Klik untuk membuka ↗️',
                             mediaType: 1,
                             thumbnailUrl: thumbnailUrl,
                             sourceUrl: firstLink,
                             mediaUrl: firstLink,
-                            showAdAttribution: false
+                            showAdAttribution: true,
+                            renderLargerThumbnail: true
                         }
                     }
                 });
