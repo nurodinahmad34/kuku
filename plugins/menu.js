@@ -1,9 +1,9 @@
 async function menu(sock, sender, message) {
-    const templates = `*✅   ᴍᴇɴᴜ ꜱᴄ ᴊᴘᴍ ✅ *
+    const templates = `*✅  MENU ✅ *
 
-➽ ʟɪꜱᴛɢᴄ
-➽ ᴊᴘᴍ
-➽ ᴘᴜꜱʜᴋᴏɴᴛᴀᴋ
+➽ listgc
+➽ jpm
+➽ pushkontak
 
 jangan lupa berkunjung ke grup https://t.me/trenadmvpn
 `;
